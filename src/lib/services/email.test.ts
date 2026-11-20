@@ -7,7 +7,10 @@ import {
   canSendEmail,
   createEmailService,
   createLazyEmailService,
+  isEmailNotConnectedError,
+  resolveEmailDriver,
   type EmailService,
+  type SmtpTransport,
 } from "./email.ts";
 
 // What the Resend client is asked to do when the service turns a request
@@ -181,5 +184,166 @@ test("signup knows when there is no email provider to send with (issue #95)", ()
       NODE_ENV: "production",
     }),
     false,
+  );
+});
+
+// EMAIL_DRIVER=smtp. Nothing here talks to a mail server: the transport is a
+// fake that records what it is asked to send.
+
+const SMTP_ENV = {
+  EMAIL_DRIVER: "smtp",
+  NODE_ENV: "production",
+  SMTP_FROM: "Acme <sign@acme.test>",
+  SMTP_HOST: "smtp.example.test",
+  SMTP_PASS: "not-a-real-password",
+  SMTP_USER: "apikey",
+};
+
+type SentMail = Parameters<SmtpTransport["sendMail"]>[0];
+
+function smtpService(
+  answer: (mail: SentMail) => Awaited<ReturnType<SmtpTransport["sendMail"]>>,
+) {
+  const sent: SentMail[] = [];
+  const service = createEmailService({
+    resolveAddresses: async () => ({
+      senderAddress: "Acme <sign@acme.test>",
+      supportAddress: "help@acme.test",
+    }),
+    smtpTransport: {
+      async sendMail(mail) {
+        sent.push(mail);
+
+        return answer(mail);
+      },
+    },
+  });
+
+  return { sent, service };
+}
+
+const ACCEPTED = (mail: SentMail) => ({
+  accepted: [mail.to],
+  messageId: `<${mail.to}@relay>`,
+  rejected: [],
+});
+
+test("over SMTP a message goes from the sender, with replies to support", async () => {
+  const { sent, service } = smtpService(ACCEPTED);
+
+  const delivery = await service.send(
+    {
+      ...MESSAGE,
+      attachments: [
+        {
+          content: new Uint8Array([37, 80, 68, 70]),
+          contentType: "application/pdf",
+          filename: "signed.pdf",
+        },
+      ],
+      htmlBody: "<p>Attached.</p>",
+    },
+    { idempotencyKey: "completion/1" },
+  );
+
+  assert.deepEqual(delivery, {
+    accepted: ["signer@example.test"],
+    messageId: "<signer@example.test@relay>",
+    rejected: [],
+  });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.from, "Acme <sign@acme.test>");
+  assert.equal(sent[0]?.replyTo, "help@acme.test");
+  assert.equal(sent[0]?.to, "signer@example.test");
+  assert.equal(sent[0]?.text, "Attached.");
+  assert.equal(sent[0]?.html, "<p>Attached.</p>");
+  assert.deepEqual(sent[0]?.headers, {
+    "X-SignuDoc-Idempotency-Key": "completion/1",
+    "X-SignuDoc-Template": "completion_notification",
+  });
+  assert.equal(sent[0]?.attachments?.[0]?.filename, "signed.pdf");
+  assert.deepEqual(
+    [...(sent[0]?.attachments?.[0]?.content ?? [])],
+    [37, 80, 68, 70],
+  );
+});
+
+test("over SMTP a message's own reply-to wins over the support address", async () => {
+  const { sent, service } = smtpService(ACCEPTED);
+
+  await service.send({ ...MESSAGE, replyTo: "sender@acme.test" });
+
+  assert.equal(sent[0]?.replyTo, "sender@acme.test");
+});
+
+test("over SMTP a batch goes out one message at a time, each with its own key", async () => {
+  const { sent, service } = smtpService(ACCEPTED);
+
+  const deliveries = await service.sendBatch(
+    [MESSAGE, { ...MESSAGE, to: "second@example.test" }],
+    { idempotencyKey: "invite/9" },
+  );
+
+  assert.deepEqual(
+    deliveries.map((delivery) => delivery.accepted),
+    [["signer@example.test"], ["second@example.test"]],
+  );
+  assert.deepEqual(
+    sent.map((mail) => mail.headers?.["X-SignuDoc-Idempotency-Key"]),
+    ["invite/9:0", "invite/9:1"],
+  );
+});
+
+test("over SMTP a recipient the server refuses fails the send", async () => {
+  const { service } = smtpService((mail) => ({
+    accepted: [],
+    rejected: [mail.to],
+  }));
+
+  await assert.rejects(
+    service.send(MESSAGE),
+    /The mail server refused signer@example\.test/,
+  );
+});
+
+test("over SMTP a batch with attachments is refused, as with Resend", async () => {
+  const { sent, service } = smtpService(ACCEPTED);
+
+  await assert.rejects(
+    service.sendBatch([
+      {
+        ...MESSAGE,
+        attachments: [
+          { content: new Uint8Array([1]), contentType: "a/b", filename: "x" },
+        ],
+      },
+    ]),
+    /one by one/,
+  );
+  assert.equal(sent.length, 0);
+});
+
+test("the SMTP driver needs its host, user, password and sender", () => {
+  assert.equal(canSendEmail(SMTP_ENV), true);
+
+  for (const name of ["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"]) {
+    const env: Record<string, string> = { ...SMTP_ENV };
+
+    delete env[name];
+    assert.equal(canSendEmail(env), false, name);
+    assert.throws(
+      () => createEmailService({ env }),
+      (error: unknown) =>
+        isEmailNotConnectedError(error) &&
+        (error as Error).message.includes(name),
+    );
+  }
+});
+
+test("EMAIL_DRIVER accepts smtp, and still names the choices when it is wrong", () => {
+  assert.equal(resolveEmailDriver({ EMAIL_DRIVER: " SMTP " }), "smtp");
+  assert.throws(
+    () => resolveEmailDriver({ EMAIL_DRIVER: "sendmail" }),
+    /Use "resend", "smtp" or "capture"/,
   );
 });

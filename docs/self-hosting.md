@@ -353,7 +353,7 @@ Away from Vercel, a few things Vercel does for you are yours to set:
 - `DATABASE_URL`, pointing at your Postgres. Run `npm run db:migrate` on every deploy; it only applies what is new.
 - `APP_URL`, the site's public HTTPS address.
 - `BETTER_AUTH_SECRET`, at least 32 characters (`openssl rand -hex 32`). Without it a secret is derived from the database password, which must then be at least 12 characters long.
-- `RESEND_API_KEY`, from your Resend account.
+- `RESEND_API_KEY`, from your Resend account. Or send through any SMTP relay (SendGrid, Mailgun, Amazon SES, your own mail server) instead: set `EMAIL_DRIVER=smtp`, `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` (the sender, for example `Acme <sign@acme.com>`, on a domain the relay is set up to send for). `SMTP_PORT` defaults to 587 with STARTTLS; set `SMTP_SECURE=1` for port 465. Settings then shows email as ready without asking Resend about domains; send a test email from there to check the relay.
 - Files are kept on the machine's disk under `.data/storage` (`STORAGE_LOCAL_DIR` changes where), so that disk must survive restarts. To use a Vercel Blob store from elsewhere, set `BLOB_READ_WRITE_TOKEN`.
 - Leave `EMAIL_DRIVER` unset. The capture driver is for development only.
 

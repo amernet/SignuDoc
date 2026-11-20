@@ -370,6 +370,61 @@ async function findDomain(
   };
 }
 
+const SMTP_SETTINGS = ["SMTP_HOST", "SMTP_USER", "SMTP_PASS", "SMTP_FROM"];
+
+// An SMTP relay has no API to ask about the sender's domain: whoever set the
+// relay up authenticated the domain there. With every SMTP setting present,
+// email counts as ready, and a test email from Settings shows that it is.
+async function inspectSmtp(
+  env: EnvSource,
+  settings: ResolvedSettings | undefined,
+  recordReady: ((ready: boolean) => Promise<void>) | undefined,
+): Promise<Inspection> {
+  const noop = async () => undefined;
+
+  if (SMTP_SETTINGS.some((name) => readEnv(env, name) === undefined)) {
+    return {
+      client: null,
+      domainId: null,
+      markReady: noop,
+      status: { onVercel: false, state: "missing_key" },
+    };
+  }
+
+  const resolvedSettings = settings ?? (await getSettings(env));
+  const markReady =
+    recordReady ??
+    ((ready: boolean) => defaultRecordReady(ready, resolvedSettings));
+  const senderAddress = extractEmailAddress(
+    buildEmailAddresses(resolvedSettings).senderAddress,
+  );
+  const domain = getAddressDomain(senderAddress);
+
+  if (!domain) {
+    await markReady(false);
+
+    return {
+      client: null,
+      domainId: null,
+      markReady,
+      status: {
+        message: "SMTP_FROM is not an email address.",
+        senderAddress,
+        state: "error",
+      },
+    };
+  }
+
+  await markReady(true);
+
+  return {
+    client: null,
+    domainId: null,
+    markReady,
+    status: { domain, senderAddress, state: "ready" },
+  };
+}
+
 // Finds out everything short of the domain's DNS records, which cost one
 // more request and are fetched by whoever needs them.
 async function inspectEmail({
@@ -387,6 +442,10 @@ async function inspectEmail({
       markReady: noop,
       status: { state: "capture" },
     };
+  }
+
+  if (!domainsClient && resolveEmailDriver(env) === "smtp") {
+    return inspectSmtp(env, settings, recordReady);
   }
 
   const client = domainsClient ?? createDomainsClient(env);

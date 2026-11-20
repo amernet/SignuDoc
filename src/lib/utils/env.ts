@@ -272,7 +272,15 @@ export function getEnv(env: EnvSource = process.env) {
     },
     email: {
       apiKey: readEnv(env, "RESEND_API_KEY"),
-      senderAddress: readEnv(env, "RESEND_FROM_EMAIL"),
+      // With EMAIL_DRIVER=smtp, SMTP_FROM is the sender unless
+      // RESEND_FROM_EMAIL is also set. Either way the address is fixed from
+      // the environment, because an SMTP relay usually sends only from the
+      // addresses it was set up for.
+      senderAddress:
+        readEnv(env, "RESEND_FROM_EMAIL") ??
+        (readEnv(env, "EMAIL_DRIVER")?.toLowerCase() === "smtp"
+          ? readEnv(env, "SMTP_FROM")
+          : undefined),
       supportAddress: readEnv(env, "SUPPORT_EMAIL"),
     },
     internal: {

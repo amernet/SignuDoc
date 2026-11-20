@@ -566,3 +566,49 @@ test("RESEND_REGION picks a known Resend region and ignores anything else", () =
   assert.deepEqual(resendRegionOption({ RESEND_REGION: "mars-1" }), {});
   assert.deepEqual(resendRegionOption({}), {});
 });
+
+test("an SMTP relay counts as ready once it is configured, without asking Resend", async () => {
+  const smtpEnv = {
+    EMAIL_DRIVER: "smtp",
+    SMTP_FROM: "Acme <Sign@Acme.com>",
+    SMTP_HOST: "smtp.example.test",
+    SMTP_PASS: "not-a-real-password",
+    SMTP_USER: "apikey",
+  };
+  const readyMarks: boolean[] = [];
+  const status = await getEmailStatus({
+    env: smtpEnv,
+    recordReady: async (ready) => {
+      readyMarks.push(ready);
+    },
+    settings: resolveSettings(stored, smtpEnv),
+  });
+
+  // SMTP_FROM is the sender, over the one saved in settings.
+  assert.deepEqual(status, {
+    domain: "acme.com",
+    senderAddress: "sign@acme.com",
+    state: "ready",
+  });
+  assert.deepEqual(readyMarks, [true]);
+  assert.equal(
+    await addEmailDomain({
+      env: smtpEnv,
+      recordReady: async () => undefined,
+      settings: resolveSettings(stored, smtpEnv),
+    }).then((result) => result.state),
+    "ready",
+  );
+});
+
+test("an SMTP relay with a setting missing is not connected", async () => {
+  const smtpEnv = { EMAIL_DRIVER: "smtp", SMTP_HOST: "smtp.example.test" };
+
+  assert.deepEqual(
+    await getEmailStatus({
+      env: smtpEnv,
+      settings: resolveSettings(stored, smtpEnv),
+    }),
+    { onVercel: false, state: "missing_key" },
+  );
+});
